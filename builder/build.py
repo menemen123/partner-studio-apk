@@ -128,6 +128,37 @@ def patch_customer_settings(directory,mt_auth,rx_auth):
     for path,text in sources.values():path.write_text(text)
     main_paths[0].write_text(main)
 
+def validate_sales_template(directory):
+    """Fail before building when reflected account/query APIs do not match runtime."""
+    root=Path(directory)
+    contracts={
+        'com/biletbagla/Responses':[
+            ('stations','(Lcom/google/gson/JsonObject;)Ljava/util/List;'),
+            ('journeys','(Lcom/google/gson/JsonObject;I)Ljava/util/List;'),
+            ('seats','(Lcom/google/gson/JsonObject;)Ljava/util/List;')],
+        'com/biletbagla/Station':[('getId','()I'),('getName','()Ljava/lang/String;')],
+        'com/biletbagla/Journey':[('getId','()Ljava/lang/String;'),('getDeparture','()Ljava/lang/String;'),('getTitle','()Ljava/lang/String;'),('getPrice','()Lcom/google/gson/JsonElement;')],
+        'com/biletbagla/Seat':[('getNumber','()I'),('getAvailable','()Z'),('getSelectable','()Z'),('getPrice','()Ljava/math/BigDecimal;')],
+        'com/biletbagla/AndroidConfigStoreKt':[('androidConfigStore','(Landroid/content/Context;)Lcom/biletbagla/ConfigStore;')],
+        'com/biletbagla/ConfigStore':[('load','()Lcom/biletbagla/AppConfig;'),('save','(Lcom/biletbagla/AppConfig;)V')],
+        'com/biletbagla/AppConfig':[
+            ('<init>','()V'),('<init>','(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;)V'),
+            *[(name,'()Ljava/lang/String;') for name in ['getBaseUrl','getBasicAuth','getSearchOrderAuth','getUsername','getPassword','getBranchId','getContractJson']]],
+        'com/google/gson/JsonParser':[('parseString','(Ljava/lang/String;)Lcom/google/gson/JsonElement;')],
+        'com/google/gson/JsonElement':[('getAsJsonObject','()Lcom/google/gson/JsonObject;')]
+    }
+    for cls,methods in contracts.items():
+        paths=list(root.glob('smali*/'+cls+'.smali'))
+        if len(paths)!=1:raise RuntimeError('Bilet satışı şablonu uyumsuz: '+cls)
+        source=paths[0].read_text()
+        if not re.search(r'(?m)^\.class public\b',source):raise RuntimeError('Bilet satışı sınıfına erişilemiyor: '+cls)
+        for name,signature in methods:
+            pattern=r'(?m)^\.method public\b[^\n]*?'+re.escape(name+signature)+r'$'
+            found=re.search(pattern,source)
+            if not found:raise RuntimeError('Bilet satışı şablonu uyumsuz: '+cls+'.'+name)
+            if name in ['androidConfigStore','parseString'] and ' static ' not in found.group():raise RuntimeError('Bilet satışı statik metodu uyumsuz: '+cls+'.'+name)
+        if cls.endswith('/Responses') and not re.search(r'(?m)^\.field public static final INSTANCE:Lcom/biletbagla/Responses;$',source):raise RuntimeError('Bilet satışı ayrıştırıcısı uyumsuz: Responses.INSTANCE')
+
 def patch_manifest(path,company):
     tree=ET.parse(path);root=tree.getroot();old=root.attrib['package'];new=company['package_id'];root.set('package',new)
     for el in root.iter():
@@ -147,6 +178,8 @@ def patch_manifest(path,company):
         filt=ET.SubElement(launch,'intent-filter');ET.SubElement(filt,'action',{NS+'name':'android.intent.action.MAIN'});ET.SubElement(filt,'category',{NS+'name':'android.intent.category.LAUNCHER'})
     if not any(x.get(NS+'name')=='com.partnerstudio.runtime.CustomerSettingsActivity' for x in app.findall('activity')):
         ET.SubElement(app,'activity',{NS+'name':'com.partnerstudio.runtime.CustomerSettingsActivity',NS+'exported':'false',NS+'theme':'@android:style/Theme.Material.Light.NoActionBar',NS+'windowSoftInputMode':'adjustResize',NS+'configChanges':'orientation|screenSize|keyboardHidden'})
+    if not any(x.get(NS+'name')=='com.partnerstudio.runtime.SalesActivity' for x in app.findall('activity')):
+        ET.SubElement(app,'activity',{NS+'name':'com.partnerstudio.runtime.SalesActivity',NS+'exported':'false',NS+'launchMode':'singleTop',NS+'theme':'@android:style/Theme.Material.Light.NoActionBar',NS+'windowSoftInputMode':'adjustResize'})
     tree.write(path,encoding='utf-8',xml_declaration=True)
 
 def signing_key(data_dir,identity):
@@ -202,12 +235,13 @@ def build_company(snapshot,version,output_dir,server_url,data_dir):
     from server.store import Store
     company={**snapshot,**Store.validate(snapshot)}
     mt_auth,rx_auth=required_common_auth()
-    if b'Lcom/partnerstudio/runtime/CustomerSettings;' not in (ROOT/'runtime.dex').read_bytes():raise RuntimeError('runtime.dex dosyasını müşteri ayarları güncellemesindeki dosyayla değiştirin.')
+    if any(name not in (ROOT/'runtime.dex').read_bytes() for name in [b'Lcom/partnerstudio/runtime/CustomerSettings;',b'Lcom/partnerstudio/runtime/SalesActivity;']):raise RuntimeError('runtime.dex dosyasını bilet satışı güncellemesindeki dosyayla değiştirin.')
     if not re.fullmatch(r'[a-f0-9]{16}',company['id']) or company['package_id']!='com.partnerstudio.f'+company['id']:raise ValueError('Firma kimliği geçersiz.')
     output=Path(output_dir).resolve();output.mkdir(parents=True,exist_ok=True);log=output/'build.log'
     with tempfile.TemporaryDirectory(prefix='studio-build-') as tmp:
         directory=Path(tmp)/'app'
         with zipfile.ZipFile(ROOT/'template.zip') as z:z.extractall(directory)
+        validate_sales_template(directory)
         patch_branding(directory,company);patch_api_url(directory,company['api_url']);patch_customer_settings(directory,mt_auth,rx_auth);patch_manifest(directory/'AndroidManifest.xml',company)
         y=directory/'apktool.yml';s=y.read_text();s=re.sub(r'(?m)^  versionCode:.*','  versionCode: '+str(int(version)),s);s=re.sub(r'(?m)^  versionName:.*','  versionName: 1.0.'+str(int(version)),s);y.write_text(s)
         assets=directory/'assets';assets.mkdir(exist_ok=True)
