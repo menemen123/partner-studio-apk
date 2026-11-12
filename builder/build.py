@@ -47,6 +47,19 @@ def patch_branding(directory,company):
         updated=updated.replace('"Mutta\\u015f"',quoted(company['app_name'])).replace('"Muttaş"',quoted(company['app_name']))
         if updated!=s:p.write_text(updated)
 
+def patch_api_url(directory,address):
+    from server.store import normalize_api_url,DEFAULT_API_URL
+    address=normalize_api_url(address)
+    root=Path(directory)
+    configs=list(root.glob('smali*/com/biletbagla/AppConfig.smali'))
+    pattern=r'(?ms)^\.method public final getBaseUrl\(\)Ljava/lang/String;.*?^\.end method'
+    if len(configs)!=1 or len(re.findall(pattern,configs[0].read_text()))!=1:raise RuntimeError('Şablonda API yapılandırma metodu bulunamadı; yanlış adresle APK üretilmedi.')
+    body='.method public final getBaseUrl()Ljava/lang/String;\n    .locals 1\n    const-string v0, '+json.dumps(address,ensure_ascii=True)+'\n    return-object v0\n.end method'
+    for p in root.glob('smali*/com/biletbagla/*.smali'):
+        original=p.read_text();updated=original.replace(json.dumps(DEFAULT_API_URL),json.dumps(address))
+        if p==configs[0]:updated=re.sub(pattern,lambda _:body,updated)
+        if updated!=original:p.write_text(updated)
+
 def patch_manifest(path,company):
     tree=ET.parse(path);root=tree.getroot();old=root.attrib['package'];new=company['package_id'];root.set('package',new)
     for el in root.iter():
@@ -123,10 +136,10 @@ def build_company(snapshot,version,output_dir,server_url,data_dir):
     with tempfile.TemporaryDirectory(prefix='studio-build-') as tmp:
         directory=Path(tmp)/'app'
         with zipfile.ZipFile(ROOT/'template.zip') as z:z.extractall(directory)
-        patch_branding(directory,company);patch_manifest(directory/'AndroidManifest.xml',company)
+        patch_branding(directory,company);patch_api_url(directory,company['api_url']);patch_manifest(directory/'AndroidManifest.xml',company)
         y=directory/'apktool.yml';s=y.read_text();s=re.sub(r'(?m)^  versionCode:.*','  versionCode: '+str(int(version)),s);s=re.sub(r'(?m)^  versionName:.*','  versionName: 1.0.'+str(int(version)),s);y.write_text(s)
         assets=directory/'assets';assets.mkdir(exist_ok=True)
-        config={'company_id':company['id'],'package_id':company['package_id'],'name':company['app_name'],'partner_code':company['partner_code'],'color':company['color'],'server_url':server_url.rstrip('/'),'version_code':int(version),'firebase':company.get('firebase',{})}
+        config={'company_id':company['id'],'package_id':company['package_id'],'name':company['app_name'],'partner_code':company['partner_code'],'api_url':company['api_url'],'color':company['color'],'server_url':server_url.rstrip('/'),'version_code':int(version),'firebase':company.get('firebase',{})}
         if company.get('firebase_project'):
             config['firebase_project']=company['firebase_project'];config['github_repo']=company['github_repo']
         (assets/'studio.json').write_text(json.dumps(config,ensure_ascii=False))
