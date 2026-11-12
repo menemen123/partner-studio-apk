@@ -60,6 +60,74 @@ def patch_api_url(directory,address):
         if p==configs[0]:updated=re.sub(pattern,lambda _:body,updated)
         if updated!=original:p.write_text(updated)
 
+def normalize_common_auth(value,name):
+    if not isinstance(value,str) or not value.strip():raise ValueError(name+' GitHub Actions secret olarak tanımlanmalı; kullanıcıdan Auth kodu istenmez.')
+    value=re.sub(r'(?i)^Basic\s+','',value.strip()).strip()
+    if len(value)>8192 or not re.fullmatch(r'[A-Za-z0-9+/]+={0,2}',value):raise ValueError(name+' geçerli bir Basic Auth kodu olmalı.')
+    try:base64.b64decode(value+'='*(-len(value)%4),validate=True)
+    except Exception:raise ValueError(name+' geçerli bir Basic Auth kodu olmalı.')
+    return value
+
+def required_common_auth():
+    values=[normalize_common_auth(os.environ.get(name,''),name) for name in ['OBUS_MT_AUTH','OBUS_RX_AUTH']]
+    if os.environ.get('GITHUB_ACTIONS')=='true':
+        for value in values:print('::add-mask::'+value,flush=True)
+    return values
+
+def patch_customer_settings(directory,mt_auth,rx_auth):
+    mt_auth=normalize_common_auth(mt_auth,'OBUS_MT_AUTH');rx_auth=normalize_common_auth(rx_auth,'OBUS_RX_AUTH')
+    root=Path(directory);sources={}
+    for name in ['AppConfig','SettingsScreenKt','BookingViewModel','PurchaseResult']:
+        paths=list(root.glob('smali*/com/biletbagla/'+name+'.smali'))
+        if len(paths)!=1:raise RuntimeError('Müşteri ayar şablonu bulunamadı: '+name)
+        sources[name]=[paths[0],paths[0].read_text()]
+    def method(text,name,signature,body):
+        pattern=r'(?ms)^\.method [^\n]*?\b'+re.escape(name+signature)+r'\n.*?^\.end method'
+        match=re.search(pattern,text)
+        if not match:raise RuntimeError('Şablon metodu bulunamadı: '+name)
+        header=match.group().splitlines()[0]
+        return re.sub(pattern,lambda _:header+'\n'+body+'\n.end method',text,count=1)
+    cfg=sources['AppConfig'][1]
+    for name,value in [('getBasicAuth',mt_auth),('getSearchOrderAuth',rx_auth)]:
+        cfg=method(cfg,name,'()Ljava/lang/String;','    .locals 1\n    const-string v0, '+json.dumps(value)+'\n    return-object v0')
+    cfg=method(cfg,'getDemo','()Z','    .locals 1\n    const/4 v0, 0x0\n    return v0')
+    cfg=method(cfg,'toString','()Ljava/lang/String;','    .locals 1\n    const-string v0, "AppConfig(ayarlar gizli)"\n    return-object v0')
+    sources['AppConfig'][1]=cfg
+    sources['PurchaseResult'][1]=method(sources['PurchaseResult'][1],'getDemo','()Z','    .locals 1\n    const/4 v0, 0x0\n    return v0')
+    signature='(Lcom/biletbagla/AppConfig;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function0;Landroidx/compose/runtime/Composer;I)V'
+    sources['SettingsScreenKt'][1]=method(sources['SettingsScreenKt'][1],'SettingsScreen',signature,'    .locals 0\n    invoke-static {p0, p1, p2}, Lcom/partnerstudio/runtime/CustomerSettings;->open(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V\n    return-void')
+    vm=sources['BookingViewModel'][1]
+    old='    new-instance p1, Lcom/biletbagla/DemoRepository;\n\n    invoke-direct {p1}, Lcom/biletbagla/DemoRepository;-><init>()V'
+    if vm.count(old)!=1:raise RuntimeError('Başlangıç repository şablonu bulunamadı.')
+    vm=vm.replace(old,'    invoke-static {}, Lcom/partnerstudio/runtime/CustomerSettings;->unconfiguredRepository()Ljava/lang/Object;\n\n    move-result-object p1')
+    body='''    .locals 7
+    new-instance v0, Lcom/biletbagla/LiveRepository;
+    iget-object v4, p0, Lcom/biletbagla/BookingViewModel;->attempts:Lcom/biletbagla/AttemptStore;
+    const/4 v5, 0x2
+    const/4 v6, 0x0
+    const/4 v3, 0x0
+    move-object v1, v0
+    move-object v2, p1
+    invoke-direct/range {v1 .. v6}, Lcom/biletbagla/LiveRepository;-><init>(Lcom/biletbagla/AppConfig;Lcom/biletbagla/TicketApi;Lcom/biletbagla/AttemptStore;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+    return-object v0'''
+    sources['BookingViewModel'][1]=method(vm,'repositoryFor','(Lcom/biletbagla/AppConfig;)Lcom/biletbagla/BookingRepository;',body)
+    main_paths=list(root.glob('smali*/com/biletbagla/MainActivityKt.smali'))
+    if len(main_paths)!=1:raise RuntimeError('Ana ekran şablonu bulunamadı.')
+    main=main_paths[0].read_text();header='.method public static final ErrorBox(Ljava/lang/String;Landroidx/compose/runtime/Composer;I)V'
+    if main.count(header)!=1:raise RuntimeError('Hata ekranı şablonu bulunamadı.')
+    main=main.replace(header,header.replace(' ErrorBox(', ' ErrorBoxUnredacted('),1)
+    main+='''
+.method public static final ErrorBox(Ljava/lang/String;Landroidx/compose/runtime/Composer;I)V
+    .locals 0
+    invoke-static {p0}, Lcom/partnerstudio/runtime/CustomerSettings;->safeMessage(Ljava/lang/String;)Ljava/lang/String;
+    move-result-object p0
+    invoke-static {p0, p1, p2}, Lcom/biletbagla/MainActivityKt;->ErrorBoxUnredacted(Ljava/lang/String;Landroidx/compose/runtime/Composer;I)V
+    return-void
+.end method
+'''
+    for path,text in sources.values():path.write_text(text)
+    main_paths[0].write_text(main)
+
 def patch_manifest(path,company):
     tree=ET.parse(path);root=tree.getroot();old=root.attrib['package'];new=company['package_id'];root.set('package',new)
     for el in root.iter():
@@ -77,6 +145,8 @@ def patch_manifest(path,company):
     if launch is None:
         launch=ET.SubElement(app,'activity',{NS+'name':'com.partnerstudio.runtime.BrandActivity',NS+'exported':'true',NS+'theme':'@android:style/Theme.Material.Light.NoActionBar'})
         filt=ET.SubElement(launch,'intent-filter');ET.SubElement(filt,'action',{NS+'name':'android.intent.action.MAIN'});ET.SubElement(filt,'category',{NS+'name':'android.intent.category.LAUNCHER'})
+    if not any(x.get(NS+'name')=='com.partnerstudio.runtime.CustomerSettingsActivity' for x in app.findall('activity')):
+        ET.SubElement(app,'activity',{NS+'name':'com.partnerstudio.runtime.CustomerSettingsActivity',NS+'exported':'false',NS+'theme':'@android:style/Theme.Material.Light.NoActionBar',NS+'windowSoftInputMode':'adjustResize',NS+'configChanges':'orientation|screenSize|keyboardHidden'})
     tree.write(path,encoding='utf-8',xml_declaration=True)
 
 def signing_key(data_dir,identity):
@@ -131,12 +201,14 @@ def replace_logo(directory,logo):
 def build_company(snapshot,version,output_dir,server_url,data_dir):
     from server.store import Store
     company={**snapshot,**Store.validate(snapshot)}
+    mt_auth,rx_auth=required_common_auth()
+    if b'Lcom/partnerstudio/runtime/CustomerSettings;' not in (ROOT/'runtime.dex').read_bytes():raise RuntimeError('runtime.dex dosyasını müşteri ayarları güncellemesindeki dosyayla değiştirin.')
     if not re.fullmatch(r'[a-f0-9]{16}',company['id']) or company['package_id']!='com.partnerstudio.f'+company['id']:raise ValueError('Firma kimliği geçersiz.')
     output=Path(output_dir).resolve();output.mkdir(parents=True,exist_ok=True);log=output/'build.log'
     with tempfile.TemporaryDirectory(prefix='studio-build-') as tmp:
         directory=Path(tmp)/'app'
         with zipfile.ZipFile(ROOT/'template.zip') as z:z.extractall(directory)
-        patch_branding(directory,company);patch_api_url(directory,company['api_url']);patch_manifest(directory/'AndroidManifest.xml',company)
+        patch_branding(directory,company);patch_api_url(directory,company['api_url']);patch_customer_settings(directory,mt_auth,rx_auth);patch_manifest(directory/'AndroidManifest.xml',company)
         y=directory/'apktool.yml';s=y.read_text();s=re.sub(r'(?m)^  versionCode:.*','  versionCode: '+str(int(version)),s);s=re.sub(r'(?m)^  versionName:.*','  versionName: 1.0.'+str(int(version)),s);y.write_text(s)
         assets=directory/'assets';assets.mkdir(exist_ok=True)
         config={'company_id':company['id'],'package_id':company['package_id'],'name':company['app_name'],'partner_code':company['partner_code'],'api_url':company['api_url'],'color':company['color'],'server_url':server_url.rstrip('/'),'version_code':int(version),'firebase':company.get('firebase',{})}
