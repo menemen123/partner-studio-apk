@@ -1,0 +1,8 @@
+tools/
+build/
+data/
+__pycache__/
+*.pyc
+*.p12
+*.password
+.runner-venv/

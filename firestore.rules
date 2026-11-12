@@ -1,0 +1,35 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.uid == 'feurzeZrRKfSgZSfMN3eP8YSWS72';
+    }
+    function validRelease(companyId) {
+      let d = request.resource.data;
+      return companyId.matches('^[a-f0-9]{16}$')
+        && d.keys().hasAll(['company_id', 'package_id', 'version_code', 'version_name', 'sha256', 'download_url'])
+        && d.keys().hasOnly(['company_id', 'package_id', 'version_code', 'version_name', 'sha256', 'download_url'])
+        && d.company_id == companyId
+        && d.package_id == 'com.partnerstudio.f' + companyId
+        && d.version_code is int && d.version_code > 0 && d.version_code <= 2100000000
+        && d.version_name is string && d.version_name.size() < 40
+        && d.sha256 is string && d.sha256.matches('^[a-f0-9]{64}$')
+        && d.download_url is string
+        && d.download_url.matches('^https://github[.]com/menemen123/partner-studio-apk/releases/download/' + companyId + '-v[0-9]+/com[.]partnerstudio[.]f' + companyId + '-[0-9]+[.]apk$');
+    }
+    match /companies/{companyId}/{document=**} {
+      allow read, write: if isAdmin();
+    }
+    match /releases/{companyId} {
+      allow get: if true;
+      allow list, delete: if isAdmin();
+      allow create: if isAdmin() && validRelease(companyId);
+      allow update: if isAdmin() && validRelease(companyId)
+        && (request.resource.data.version_code > resource.data.version_code
+          || (request.resource.data.version_code == resource.data.version_code
+            && request.resource.data.sha256 == resource.data.sha256
+            && request.resource.data.download_url == resource.data.download_url));
+    }
+  }
+}
