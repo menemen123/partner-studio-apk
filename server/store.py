@@ -8,9 +8,36 @@ import secrets
 import sqlite3
 import struct
 import time
+import ipaddress
+from urllib.parse import urlsplit, urlunsplit, quote
 from pathlib import Path
 
 class ValidationError(ValueError): pass
+
+DEFAULT_API_URL='https://api-coreprod-cluster1.obus.com.tr/api/'
+
+def normalize_api_url(value):
+    message='API adresi geçerli bir HTTPS temel adresi olmalı; kullanıcı bilgisi, sorgu ve # içermemeli.'
+    if not isinstance(value,str) or not value or len(value)>2048 or any(ord(c)<32 or ord(c)==127 for c in value):raise ValidationError(message)
+    text=value.strip()
+    if any(c.isspace() for c in text) or any(c in text for c in ['\\','?','#']) or re.search(r'%(?![0-9a-fA-F]{2})',text):raise ValidationError(message)
+    try:
+        u=urlsplit(text);host=u.hostname;port=u.port
+        if u.scheme.lower()!='https' or not host or u.username is not None or u.password is not None or (port is not None and not 1<=port<=65535):raise ValueError()
+        host.encode('ascii');host=host.lower()
+        if ':' in host:
+            ipaddress.IPv6Address(host);authority='['+host+']'
+        else:
+            if len(host)>253 or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',label) for label in host.rstrip('.').split('.')):raise ValueError()
+            if len(host.split('.'))==4 and all(x.isdigit() for x in host.split('.')):ipaddress.IPv4Address(host)
+            authority=host
+        if port is not None:authority+=':'+str(port)
+        path=quote(u.path,safe="/%:@-._~!$&'()*+,;=")
+        if not path.endswith('/'):path+='/'
+        normalized=urlunsplit(('https',authority,path,'',''))
+        if len(normalized)>2048:raise ValueError()
+        return normalized
+    except (ValueError,UnicodeError):raise ValidationError(message)
 
 class Store:
     def __init__(self, root):
@@ -69,6 +96,7 @@ class Store:
                 from server.png import validate_png
                 validate_png(raw)
             except Exception:raise ValidationError('PNG logo geçersiz veya boyutları desteklenmiyor.')
+        out['api_url']=normalize_api_url(data.get('api_url',DEFAULT_API_URL))
         out['logo']=logo
         firebase=data.get('firebase',{})
         if not isinstance(firebase,dict):raise ValidationError('Firebase ayarları geçersiz.')
