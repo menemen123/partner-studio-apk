@@ -27,6 +27,11 @@ public final class CustomerSettings {
    }catch(Exception e){clear();if(app!=null)Toast.makeText(app,"Ayarlar açılamadı. Uygulamayı yeniden açıp deneyin.",Toast.LENGTH_LONG).show();}
   });
  }
+ public static synchronized void openAccount(Activity host){
+  if(pending||active!=null)return;
+  try{active=new Session(AccountStore.load(host),new AccountStore.Save(host));pending=true;host.startActivity(new Intent(host,CustomerSettingsActivity.class));}
+  catch(Exception e){clear();Toast.makeText(host,"Hesap ayarları açılamadı.",Toast.LENGTH_LONG).show();}
+ }
  static synchronized Session session(){return active;}
  static synchronized void clear(){active=null;pending=false;}
  public static Object unconfiguredRepository(){
