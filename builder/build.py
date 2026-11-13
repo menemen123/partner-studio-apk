@@ -180,6 +180,8 @@ def patch_manifest(path,company):
         ET.SubElement(app,'activity',{NS+'name':'com.partnerstudio.runtime.CustomerSettingsActivity',NS+'exported':'false',NS+'theme':'@android:style/Theme.Material.Light.NoActionBar',NS+'windowSoftInputMode':'adjustResize',NS+'configChanges':'orientation|screenSize|keyboardHidden'})
     if not any(x.get(NS+'name')=='com.partnerstudio.runtime.SalesActivity' for x in app.findall('activity')):
         ET.SubElement(app,'activity',{NS+'name':'com.partnerstudio.runtime.SalesActivity',NS+'exported':'false',NS+'launchMode':'singleTop',NS+'theme':'@android:style/Theme.Material.Light.NoActionBar',NS+'windowSoftInputMode':'adjustResize'})
+    if not any(x.get(NS+'name')=='com.partnerstudio.runtime.RefundActivity' for x in app.findall('activity')):
+        ET.SubElement(app,'activity',{NS+'name':'com.partnerstudio.runtime.RefundActivity',NS+'exported':'false',NS+'launchMode':'singleTop',NS+'theme':'@android:style/Theme.Material.Light.NoActionBar',NS+'windowSoftInputMode':'adjustResize'})
     tree.write(path,encoding='utf-8',xml_declaration=True)
 
 def signing_key(data_dir,identity):
@@ -235,7 +237,7 @@ def build_company(snapshot,version,output_dir,server_url,data_dir):
     from server.store import Store
     company={**snapshot,**Store.validate(snapshot)}
     mt_auth,rx_auth=required_common_auth()
-    if any(name not in (ROOT/'runtime.dex').read_bytes() for name in [b'Lcom/partnerstudio/runtime/CustomerSettings;',b'Lcom/partnerstudio/runtime/SalesActivity;']):raise RuntimeError('runtime.dex dosyasını bilet satışı güncellemesindeki dosyayla değiştirin.')
+    if any(name not in (ROOT/'runtime.dex').read_bytes() for name in [b'Lcom/partnerstudio/runtime/CustomerSettings;',b'Lcom/partnerstudio/runtime/SalesActivity;',b'Lcom/partnerstudio/runtime/RefundActivity;']):raise RuntimeError('runtime.dex dosyasını bilet satışı güncellemesindeki dosyayla değiştirin.')
     if not re.fullmatch(r'[a-f0-9]{16}',company['id']) or company['package_id']!='com.partnerstudio.f'+company['id']:raise ValueError('Firma kimliği geçersiz.')
     output=Path(output_dir).resolve();output.mkdir(parents=True,exist_ok=True);log=output/'build.log'
     with tempfile.TemporaryDirectory(prefix='studio-build-') as tmp:
